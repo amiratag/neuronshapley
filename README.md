@@ -12,7 +12,7 @@ Required python libraries:
 
 1- You need to download the inception_v3 checkpoint and save it as inception_v3.ckpt: https://drive.google.com/open?id=1by_aFmyImtM-pVYq_BtPTvmCF3K9iyQe
 
-2- Imagenet Validation set should be saved in './imagenet' in the following structure: The folder should containt 1000 subfolders where images of each ImageNt class are in a separate folder (named exactly as the class names in the val_images.txt file). Images should be resized to 299 * 299.
+2- Imagenet Validation set should be saved in './imagenet' in the following structure: The folder should containt 1000 subfolders where images of each ImageNet class are in a separate folder (named exactly as the class names in the val_images.txt file). Images should be resized to 299 * 299.
 
 ### Getting started
 How to run the code
