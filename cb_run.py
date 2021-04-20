@@ -17,15 +17,18 @@ import inception
 import h5py
 slim = tf.contrib.slim
 
+
 DATA_DIR = './imagenet'
 MEM_DIR = './results'
 CHECKPOINT = 'inception_v3.ckpt'
 BATCH_SIZE = 128
 TIME_START = time.time()
+NUM_CLASSES = 1000
+SAVE_FREQ = 10
 
 
 def remove_players(model, players):
-    '''remove selected players in the Inception-v3 network.'''
+    '''Remove selected players (filters) in the Inception-v3 network.'''
     if isinstance(players, str):
         players = [players]
     for player in players:
@@ -61,6 +64,7 @@ def one_iteration(
 ):
     '''One iteration of Neuron-Shapley algoirhtm.'''
     model.restore(CHECKPOINT)
+    # Original performance of the model with all players present.
     init_val = value(model, images, labels, metric)
     if c is None:
         c = {i: np.array([i]) for i in range(len(players))}
@@ -70,8 +74,9 @@ def one_iteration(
         truncation = len(c.keys())
     if chosen_players is None:
         chosen_players = np.arange(len(c.keys()))
+    # A random ordering of players
     idxs = np.random.permutation(len(c.keys()))
-    print(idxs)
+    # -1 default value for players that have already converged
     marginals = -np.ones(len(c.keys()))
     marginals[chosen_players] = 0.
     t = time.time()
@@ -280,7 +285,6 @@ def load_images_labels(key, num_images, max_sample_size, model, max_size=25000):
 
 
 
-np.random.seed(0)
 key = sys.argv[1] #Class name. Use 'all' for overll performance.
 model_scope = 'InceptionV3'
 metric = sys.argv[2] #metric one of accuracy, binary, xe_loss.
@@ -291,10 +295,11 @@ max_sample_size = 128
 adversarial = (sys.argv[4] == 'True') #If True, computes contributions for adversarial setting.
 time.sleep(10 * np.random.random())
 ## Experiment Directory
-experiment_dir = os.path.join(MEM_DIR,
-                              'NShap/inceptionv3/{}_{}_new'.format(metric, key))
+experiment_dir = os.path.join(
+    MEM_DIR, 'NShap/inceptionv3/{}_{}_new'.format(metric, key))
 if not tf.gfile.Exists(experiment_dir):
     tf.gfile.MakeDirs(experiment_dir)
+## CB directory
 if max_sample_size is None or max_sample_size > num_images:
     max_sample_size = num_images
 experiment_name = 'cb_{}_{}_{}'.format(bound, truncation, max_sample_size)
@@ -303,7 +308,7 @@ if adversarial:
 cb_dir = os.path.join(experiment_dir, experiment_name)
 if not tf.gfile.Exists(cb_dir):
     tf.gfile.MakeDirs(cb_dir)
-print(cb_dir)
+## Load Model and find all convolutional filters
 tf.reset_default_graph()
 model = inception.inpcetion_instance(checkpoint=CHECKPOINT)
 model_variables = tf.global_variables(scope=model_scope)
@@ -311,6 +316,7 @@ convs = ['/'.join(k.name.split('/')[:-1]) for k in model_variables if 'weights'
          in k.name and 'Aux' not in k.name and 'Logits' not in k.name]
 layer_dic = {conv: [var for var in model_variables if conv in var.name]
              for conv in convs}
+## Load the list of all players (filters) else save
 if tf.gfile.Exists(os.path.join(experiment_dir, 'players.txt')):
     players = open(os.path.join(
         experiment_dir, 'players.txt')).read().split(',')
@@ -324,31 +330,31 @@ else:
     players = np.sort(np.concatenate(players))
     open(os.path.join(experiment_dir, 'players.txt'), 'w').write(
         ','.join(players))
+## Load metric's base value (random performance)
 if metric == 'accuracy':
-    base_value = 1./1000
+    base_value = 1./NUM_CLASSES
 elif metric == 'xe_loss':
-    base_value = -np.log(1000)
+    base_value = -np.log(NUM_CLASSES)
 elif metric == 'binary':
     base_value = 0.5
 elif metric == 'logit':
     base_value = 0
 else:
     raise ValueError('Invalid metric!')
+## Assign expriment number to this specific run of cb_run.py
 results = [saved for saved in tf.gfile.ListDirectory(cb_dir)
            if 'agg' not in saved and '.h5' in saved]
 experiment_number = 0
 if len(results):
-    experiment_number += np.max([int(result.split('.')[-2].split('_')[-1][1:]) 
-                            for result in results]) + 1
+    results_experiment_numbers = [int(result.split('.')[-2].split('_')[-1][1:])
+                                  for result in results]
+    experiment_number += np.max(results_experiment_numbers) + 1
 print(experiment_number)
-if 'arthur' in socket.gethostname():
-    save_dir = os.path.join(
-        cb_dir, '{}.h5'.format(socket.gethostname()[-1] + str(experiment_number).zfill(5))
-    )
-else:
-    save_dir = os.path.join(
-        cb_dir, '{}.h5'.format('0' + str(experiment_number).zfill(5))
-    )
+save_dir = os.path.join(
+    cb_dir, '{}.h5'.format('0' + str(experiment_number).zfill(5))
+)
+## Create placeholder for results in save ASAP to prevent having the 
+## same expriment_number with other parallel cb_run.py scripts
 mem_tmc = np.zeros((0, len(players)))
 idxs_tmc = np.zeros((0, len(players))).astype(int)
 with h5py.File(save_dir, 'w') as foo:
@@ -360,24 +366,11 @@ if c is None:
     c = {i: np.array([i]) for i in range(len(players))}
 elif not isinstance(c, dict):
     c = {i: np.where(np.array(c)==i)[0] for i in set(list(c))}
+
 counter = 0
 while True:
-    if counter % 100 == 0:
-        results = [saved for saved in tf.gfile.ListDirectory(cb_dir)
-           if 'agg' not in saved and '.h5' in saved]
-        experiment_number = 0
-        if len(results):
-            experiment_number += np.max([int(result.split('.')[-2].split('_')[-1]) 
-                                    for result in results]) + 1
-        #np.random.seed(experiment_number)
-        save_dir = os.path.join(
-            cb_dir, '{}.h5'.format(str(experiment_number).zfill(6))
-        )
-        mem_tmc = np.zeros((0, len(players)))
-        idxs_tmc = np.zeros((0, len(players))).astype(int)
-        with h5py.File(save_dir, 'w') as foo:
-            foo.create_dataset("mem_tmc", data=mem_tmc, compression='gzip')
-            foo.create_dataset("idxs_tmc", data=idxs_tmc, compression='gzip')
+    ## Load the list of players (filters) that are determined to be not confident enough
+    ## by the cb_aggregate.py running in parallel to this script
     if tf.gfile.Exists(os.path.join(cb_dir, 'chosen_players.txt')):
         chosen_players = open(os.path.join(
                 cb_dir, 'chosen_players.txt')).read()
@@ -386,18 +379,28 @@ while True:
             break
     else:
         chosen_players = None
+        
     t_init = time.time()
-    iter_images, iter_labels = load_images_labels('-'+ key if adversarial else key,
-                                                  num_images, max_sample_size, 
-                                                  model, max_size=25000)
+    iter_images, iter_labels = load_images_labels(
+        '-'+ key if adversarial else key,
+        num_images,
+        max_sample_size,
+        model,
+        max_size=25000)
+    
     if metric == 'binary':
-        rnd_images, _ = load_images_labels('rnd', len(iter_images), max_sample_size,
-                                           model, max_size=25000)
+        rnd_images, _ = load_images_labels(
+            'rnd',
+            len(iter_images),
+            max_sample_size,
+            model,
+            max_size=25000)
         iter_images = np.concatenate([iter_images, rnd_images])
         iter_labels = np.concatenate([
             iter_labels, 
-            -np.ones(len(rnd_images))
-        ]).astype(int)
+            -np.ones(len(rnd_images)).astype(int)
+        ])
+        
     idxs, vals =  one_iteration(
         model=model,
         players=players,
@@ -410,17 +413,17 @@ while True:
     )
     mem_tmc = np.concatenate([mem_tmc, vals])
     idxs_tmc = np.concatenate([idxs_tmc, idxs])
-    with h5py.File(save_dir, 'w') as foo:
-        foo.create_dataset("mem_tmc", data=mem_tmc, compression='gzip')
-        foo.create_dataset("idxs_tmc", data=idxs_tmc, compression='gzip')
+    ## Save results every SAVE_FREQ iterations
+    if counter % SAVE_FREQ == SAVE_FREQ - 1:
+        with h5py.File(save_dir, 'w') as foo:
+            foo.create_dataset("mem_tmc", data=mem_tmc, compression='gzip')
+            foo.create_dataset("idxs_tmc", data=idxs_tmc, compression='gzip')
+            
     counter += 1
     print(time.time() - t_init, time.time() - TIME_START)
     if not tf.test.is_gpu_available():
         print('No gpu!')
         print(time.time() - TIME_START)
-        #break
     else:
         print('There is a gpu!')
         print(time.time() - TIME_START)
-        if counter >= 10000:
-            break
